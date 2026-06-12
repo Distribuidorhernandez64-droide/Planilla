@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Planilla - Distribuidora Hernández</title>
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E📦%3C/text%3E%3C/svg%3E">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0f172a; color:#f1f5f9; font-family:system-ui,-apple-system,sans-serif; -webkit-tap-highlight-color:transparent; }
+  input, select, button { font-family:inherit; }
+  input:focus, select:focus { border-color:#38bdf8 !important; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const C = {
+  bg:"#0f172a", surface:"#1e293b", card:"#1a2744",
+  accent:"#38bdf8", accentDark:"#0284c7",
+  green:"#4ade80", red:"#f87171", yellow:"#fbbf24",
+  purple:"#c084fc", text:"#f1f5f9", muted:"#64748b", border:"#1e3a5f",
+};
+
+const SUPABASE_URL = "https://dacabppqjbsgmuuwwvbz.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRhY2FicHBxamJzZ211dXd3dmJ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExNzI4NTEsImV4cCI6MjA5Njc0ODg1MX0.seOqAgW848iAZYWb0hVeoW42c0JmN7H-eHbBs_wEYGo";
+const HEADERS = { "Content-Type":"application/json", "apikey":SUPABASE_KEY, "Authorization":"Bearer "+SUPABASE_KEY };
+
+const dbGet = async (tabla) => {
+  try {
+    const r = await fetch(SUPABASE_URL+"/rest/v1/"+tabla+"?select=*", { headers:HEADERS });
+    const rows = await r.json();
+    return Array.isArray(rows) ? rows.map(x=>x.data) : [];
+  } catch { return []; }
+};
+const dbUpsert = async (tabla, id, data) => {
+  try {
+    const r = await fetch(SUPABASE_URL+"/rest/v1/"+tabla, {
+      method:"POST",
+      headers:{...HEADERS, "Prefer":"resolution=merge-duplicates,return=minimal"},
+      body:JSON.stringify({id, data}),
+    });
+    return r.ok;
+  } catch { return false; }
+};
+const dbDelete = async (tabla, id) => {
+  try {
+    const r = await fetch(SUPABASE_URL+"/rest/v1/"+tabla+"?id=eq."+encodeURIComponent(id), { method:"DELETE", headers:HEADERS });
+    return r.ok;
+  } catch { return false; }
+};
+
+const fmt = (n) => "Q "+parseFloat(n||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,",");
+const todayStr = () => new Date().toISOString().split("T")[0];
+const fmtFecha = (f) => { if(!f) return ""; const p=f.split("-"); return p[2]+"/"+p[1]+"/"+p[0]; };
+const HORAS_OPT = [0.5,1,1.5,2,2.5,3,3.5,4];
+const hrLabel = (h) => h===0.5?"½":h===1.5?"1½":h===2.5?"2½":h===3.5?"3½":""+h;
+
+const inp = { background:"#0f1f38", border:"1px solid "+C.border, borderRadius:8, color:C.text, padding:"9px 12px", fontSize:14, width:"100%", outline:"none", boxSizing:"border-box" };
+const btn = (bg=C.accent, fg="#0f172a") => ({ background:bg, color:fg, border:"none", borderRadius:8, padding:"9px 18px", fontWeight:700, cursor:"pointer", fontSize:13 });
+const lbl = (color=C.muted) => ({ fontSize:11, color, marginBottom:3, display:"block", fontWeight:600, letterSpacing:"0.05em", textTransform:"uppercase" });
+const cardStyle = (extra={}) => ({ background:C.card, borderRadius:12, padding:16, border:"1px solid "+C.border, marginBottom:12, ...extra });
+
+let nextId = Date.now();
+const uid = () => String(nextId++);
+
+function Planilla() {
+  const [tab,setTab] = useState("trabajadores");
+  const [trabajadores,setTrabajadores] = useState([]);
+  const [registros,setRegistros] = useState([]);
+  const [cargando,setCargando] = useState(true);
+  const [guardando,setGuardando] = useState(false);
+  const [form,setForm] = useState({ nombre:"",fechaInicio:"",sueldoBase:"",bonificacion:"",tarifaDia:"",tarifaHora:"",anticipo:"" });
+  const [editId,setEditId] = useState(null);
+  const [reg,setReg] = useState({ trabajadorId:"",fecha:todayStr(),tipo:"horas",horas:1 });
+  const [filtroId,setFiltroId] = useState("todos");
+  const [rango,setRango] = useState({ desde:"",hasta:"" });
+
+  useEffect(() => {
+    (async()=>{
+      const t = await dbGet("trabajadores");
+      const r = await dbGet("registros");
+      setTrabajadores(t||[]); setRegistros(r||[]);
+      setCargando(false);
+    })();
+  },[]);
+
+  const saveWorker = async () => {
+    if(!form.nombre.trim()||!form.sueldoBase) return;
+    setGuardando(true);
+    let lista;
+    if(editId!==null){
+      const updated = {...trabajadores.find(t=>t.id===editId), ...form};
+      await dbUpsert("trabajadores", editId, updated);
+      lista = trabajadores.map(t=>t.id===editId?updated:t);
+      setEditId(null);
+    } else {
+      const nuevo = {id:uid(), ...form};
+      await dbUpsert("trabajadores", nuevo.id, nuevo);
+      lista = [...trabajadores, nuevo];
+    }
+    setTrabajadores(lista);
+    setForm({ nombre:"",fechaInicio:"",sueldoBase:"",bonificacion:"",tarifaDia:"",tarifaHora:"",anticipo:"" });
+    setGuardando(false);
+  };
+  const startEdit = (t) => { setForm({...t}); setEditId(t.id); setTab("trabajadores"); };
+  const deleteWorker = async (id) => {
+    setGuardando(true);
+    await dbDelete("trabajadores", id);
+    const regsElim = registros.filter(r=>r.trabajadorId===id);
+    for(const r of regsElim) await dbDelete("registros", r.id);
+    setTrabajadores(p=>p.filter(t=>t.id!==id));
+    setRegistros(p=>p.filter(r=>r.trabajadorId!==id));
+    setGuardando(false);
+  };
+  const addRegistro = async () => {
+    if(!reg.trabajadorId||!reg.fecha) return;
+    setGuardando(true);
+    const nuevo = {id:uid(), trabajadorId:reg.trabajadorId, fecha:reg.fecha, tipo:reg.tipo, horas:reg.tipo==="horas"?reg.horas:null};
+    await dbUpsert("registros", nuevo.id, nuevo);
+    setRegistros(p=>[...p,nuevo]);
+    setGuardando(false);
+  };
+  const deleteRegistro = async (id) => {
+    setGuardando(true);
+    await dbDelete("registros", id);
+    setRegistros(p=>p.filter(r=>r.id!==id));
+    setGuardando(false);
+  };
+
+  const calcWorker = (t, regsBase) => {
+    const totalHoras = regsBase.filter(r=>r.tipo==="horas").reduce((s,r)=>s+Number(r.horas),0);
+    const totalDias = regsBase.filter(r=>r.tipo==="dia").length;
+    const base = parseFloat(t.sueldoBase)||0;
+    const bono = parseFloat(t.bonificacion)||0;
+    const ant = parseFloat(t.anticipo)||0;
+    const montoHoras = totalHoras*(parseFloat(t.tarifaHora)||0);
+    const montoDias = totalDias*(parseFloat(t.tarifaDia)||0);
+    const total = base+bono+montoHoras+montoDias-ant;
+    return {base,bono,ant,montoHoras,montoDias,totalHoras,totalDias,total};
+  };
+
+  const trabajadoresFiltrados = filtroId==="todos"?trabajadores:trabajadores.filter(t=>t.id===filtroId);
+  const registrosFiltradosPorFecha = (tid) => {
+    let rs = registros.filter(r=>r.trabajadorId===tid);
+    if(rango.desde) rs=rs.filter(r=>r.fecha>=rango.desde);
+    if(rango.hasta) rs=rs.filter(r=>r.fecha<=rango.hasta);
+    return rs;
+  };
+  const totalGeneral = trabajadoresFiltrados.reduce((s,t)=>s+calcWorker(t,registrosFiltradosPorFecha(t.id)).total,0);
+
+  const tabs = [
+    {key:"trabajadores",icon:"👷",label:"Trabajadores"},
+    {key:"registro",icon:"📝",label:"Registro"},
+    {key:"resumen",icon:"📋",label:"Resumen"},
+  ];
+
+  if(cargando) return (
+    <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16}}>
+      <div style={{fontSize:32}}>📦</div>
+      <div style={{color:C.accent,fontWeight:700}}>Cargando datos...</div>
+    </div>
+  );
+
+  return (
+    <div style={{minHeight:"100vh",background:C.bg,color:C.text}}>
+      <div style={{background:C.surface,borderBottom:"1px solid "+C.border,padding:"16px 20px 0",position:"sticky",top:0,zIndex:10}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:20,fontWeight:900,color:C.accent}}>📦 Distribuidora Hernández</div>
+            <div style={{fontSize:12,color:C.muted}}>Control de planilla</div>
+          </div>
+          <div style={{fontSize:11,color:guardando?C.yellow:C.green}}>{guardando?"💾 Guardando...":"☁️ Guardado"}</div>
+        </div>
+        <div style={{display:"flex",gap:2,marginTop:12}}>
+          {tabs.map(t=>(
+            <button key={t.key} onClick={()=>setTab(t.key)} style={{background:tab===t.key?C.accent:"transparent",color:tab===t.key?"#0f172a":C.muted,border:"none",borderRadius:"8px 8px 0 0",padding:"8px 14px",fontWeight:700,cursor:"pointer",fontSize:13}}>{t.icon} {t.label}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{maxWidth:680,margin:"0 auto",padding:"20px 14px 40px"}}>
+
+        {tab==="trabajadores" && (
+          <React.Fragment>
+            <div style={cardStyle()}>
+              <div style={{fontWeight:800,fontSize:15,marginBottom:14,color:C.accent}}>{editId!==null?"✏️ Editar trabajador":"➕ Nuevo trabajador"}</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <div style={{gridColumn:"1/-1"}}>
+                  <span style={lbl()}>Nombre completo</span>
+                  <input style={inp} placeholder="Ej: Juan Pérez" value={form.nombre} onChange={e=>setForm({...form,nombre:e.target.value})} />
+                </div>
+                <div style={{gridColumn:"1/-1"}}>
+                  <span style={lbl(C.accent)}>Fecha de inicio</span>
+                  <input style={inp} type="date" value={form.fechaInicio} onChange={e=>setForm({...form,fechaInicio:e.target.value})} />
+                </div>
+                <div><span style={lbl(C.green)}>Sueldo base (Q)</span><input style={inp} type="number" placeholder="0.00" value={form.sueldoBase} onChange={e=>setForm({...form,sueldoBase:e.target.value})} /></div>
+                <div><span style={lbl(C.purple)}>Bonificación (Q)</span><input style={inp} type="number" placeholder="0.00" value={form.bonificacion} onChange={e=>setForm({...form,bonificacion:e.target.value})} /></div>
+                <div><span style={lbl(C.yellow)}>Tarifa día extra (Q)</span><input style={inp} type="number" placeholder="0.00" value={form.tarifaDia} onChange={e=>setForm({...form,tarifaDia:e.target.value})} /></div>
+                <div><span style={lbl(C.accent)}>Tarifa hora extra (Q)</span><input style={inp} type="number" placeholder="0.00" value={form.tarifaHora} onChange={e=>setForm({...form,tarifaHora:e.target.value})} /></div>
+                <div style={{gridColumn:"1/-1"}}><span style={lbl(C.red)}>Anticipo del mes (Q)</span><input style={inp} type="number" placeholder="0.00" value={form.anticipo} onChange={e=>setForm({...form,anticipo:e.target.value})} /></div>
+              </div>
+              <div style={{display:"flex",gap:8,marginTop:14}}>
+                <button style={btn()} onClick={saveWorker}>{editId!==null?"Guardar cambios":"Agregar trabajador"}</button>
+                {editId!==null && <button style={btn(C.border,C.text)} onClick={()=>{setEditId(null);setForm({nombre:"",fechaInicio:"",sueldoBase:"",bonificacion:"",tarifaDia:"",tarifaHora:"",anticipo:""});}}>Cancelar</button>}
+              </div>
+            </div>
+            {trabajadores.length===0
+              ? <div style={{textAlign:"center",color:C.muted,marginTop:40}}>Aún no hay trabajadores.</div>
+              : trabajadores.map(t=>(
+                <div key={t.id} style={cardStyle()}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                    <div>
+                      <div style={{fontWeight:800,fontSize:16}}>{t.nombre}</div>
+                      {t.fechaInicio && <div style={{fontSize:11,color:C.accent,marginTop:2}}>📅 Desde: {fmtFecha(t.fechaInicio)}</div>}
+                      <div style={{marginTop:6,display:"flex",flexWrap:"wrap",gap:"5px 12px",fontSize:12}}>
+                        <span>Base: <b style={{color:C.green}}>{fmt(t.sueldoBase)}</b></span>
+                        {parseFloat(t.bonificacion)>0 && <span>Bono: <b style={{color:C.purple}}>{fmt(t.bonificacion)}</b></span>}
+                        <span>Día extra: <b style={{color:C.yellow}}>{fmt(t.tarifaDia)}</b></span>
+                        <span>Hora extra: <b style={{color:C.accent}}>{fmt(t.tarifaHora)}</b></span>
+                        {parseFloat(t.anticipo)>0 && <span>Anticipo: <b style={{color:C.red}}>-{fmt(t.anticipo)}</b></span>}
+                      </div>
+                    </div>
+                    <div style={{display:"flex",gap:6,flexShrink:0,marginLeft:8}}>
+                      <button style={{...btn(C.accentDark,"#fff"),padding:"6px 11px",fontSize:12}} onClick={()=>startEdit(t)}>✏️</button>
+                      <button style={{...btn(C.red),padding:"6px 11px",fontSize:12}} onClick={()=>deleteWorker(t.id)}>🗑️</button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            }
+          </React.Fragment>
+        )}
+
+        {tab==="registro" && (
+          <React.Fragment>
+            <div style={cardStyle()}>
+              <div style={{fontWeight:800,fontSize:15,marginBottom:14,color:C.accent}}>📝 Agregar registro</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <div style={{gridColumn:"1/-1"}}>
+                  <span style={lbl()}>Trabajador</span>
+                  <select style={inp} value={reg.trabajadorId} onChange={e=>setReg({...reg,trabajadorId:e.target.value})}>
+                    <option value="">— Seleccionar —</option>
+                    {trabajadores.map(t=><option key={t.id} value={t.id}>{t.nombre}</option>)}
+                  </select>
+                </div>
+                <div><span style={lbl()}>Fecha</span><input style={inp} type="date" value={reg.fecha} onChange={e=>setReg({...reg,fecha:e.target.value})} /></div>
+                <div>
+                  <span style={lbl()}>Tipo</span>
+                  <select style={inp} value={reg.tipo} onChange={e=>setReg({...reg,tipo:e.target.value})}>
+                    <option value="horas">Horas extras</option>
+                    <option value="dia">Día extra completo</option>
+                  </select>
+                </div>
+                {reg.tipo==="horas" && (
+                  <div style={{gridColumn:"1/-1"}}>
+                    <span style={lbl(C.accent)}>Cantidad de horas</span>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:4}}>
+                      {HORAS_OPT.map(h=>(
+                        <button key={h} onClick={()=>setReg({...reg,horas:h})} style={{padding:"8px 14px",borderRadius:8,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,background:reg.horas===h?C.accent:"#0f1f38",color:reg.horas===h?"#0f172a":C.muted}}>{hrLabel(h)} hr</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button style={{...btn(),marginTop:14,width:"100%"}} onClick={addRegistro}>Guardar registro</button>
+            </div>
+            {registros.length>0 && (
+              <React.Fragment>
+                <div style={{fontSize:12,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>Registros guardados ({registros.length})</div>
+                {[...registros].reverse().map(r=>{
+                  const t = trabajadores.find(w=>w.id===r.trabajadorId);
+                  if(!t) return null;
+                  const monto = r.tipo==="dia"?parseFloat(t.tarifaDia)||0:r.horas*(parseFloat(t.tarifaHora)||0);
+                  return (
+                    <div key={r.id} style={{...cardStyle({padding:"12px 14px"}),display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:14}}>{t.nombre}</div>
+                        <div style={{fontSize:12,color:C.muted,marginTop:2}}>📅 {fmtFecha(r.fecha)} · {r.tipo==="dia"?"Día extra":hrLabel(r.horas)+" hr extra"}</div>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:10}}>
+                        <span style={{color:C.yellow,fontWeight:800}}>{fmt(monto)}</span>
+                        <button style={{...btn(C.red),padding:"5px 10px",fontSize:12}} onClick={()=>deleteRegistro(r.id)}>✕</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </React.Fragment>
+            )}
+          </React.Fragment>
+        )}
+
+        {tab==="resumen" && (
+          <React.Fragment>
+            <div style={cardStyle({padding:14})}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+                <div style={{gridColumn:"1/-1"}}>
+                  <span style={lbl()}>Trabajador</span>
+                  <select style={inp} value={filtroId} onChange={e=>setFiltroId(e.target.value)}>
+                    <option value="todos">Todos</option>
+                    {trabajadores.map(t=><option key={t.id} value={t.id}>{t.nombre}</option>)}
+                  </select>
+                </div>
+                <div><span style={lbl()}>Desde</span><input style={inp} type="date" value={rango.desde} onChange={e=>setRango({...rango,desde:e.target.value})} /></div>
+                <div><span style={lbl()}>Hasta</span><input style={inp} type="date" value={rango.hasta} onChange={e=>setRango({...rango,hasta:e.target.value})} /></div>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:12,color:C.muted}}>{rango.desde||rango.hasta?"📅 "+(fmtFecha(rango.desde)||"inicio")+" → "+(fmtFecha(rango.hasta)||"hoy"):"Sin filtro de fecha"}</span>
+                <div>
+                  <span style={{fontSize:11,color:C.muted}}>{filtroId==="todos"?"TOTAL GENERAL":"TOTAL"} </span>
+                  <span style={{fontWeight:900,color:C.green,fontSize:18}}>{fmt(totalGeneral)}</span>
+                </div>
+              </div>
+            </div>
+            {trabajadores.length===0
+              ? <div style={{textAlign:"center",color:C.muted,marginTop:40}}>No hay trabajadores registrados.</div>
+              : trabajadoresFiltrados.map(t=>{
+                  const rs = registrosFiltradosPorFecha(t.id);
+                  const c = calcWorker(t,rs);
+                  const regsHoras = rs.filter(r=>r.tipo==="horas").sort((a,b)=>a.fecha.localeCompare(b.fecha));
+                  const regsDias = rs.filter(r=>r.tipo==="dia").sort((a,b)=>a.fecha.localeCompare(b.fecha));
+                  return (
+                    <div key={t.id} style={cardStyle({borderColor:C.accentDark})}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+                        <div>
+                          <div style={{fontWeight:900,fontSize:17}}>{t.nombre}</div>
+                          {t.fechaInicio && <div style={{fontSize:11,color:C.accent,marginTop:2}}>📅 Inicio: {fmtFecha(t.fechaInicio)}</div>}
+                        </div>
+                        <div style={{fontWeight:900,fontSize:20,color:C.green}}>{fmt(c.total)}</div>
+                      </div>
+                      <div style={{fontSize:13,display:"grid",gridTemplateColumns:"1fr auto",gap:"6px 12px",marginBottom:12}}>
+                        <span style={{color:C.muted}}>Sueldo base</span><span style={{textAlign:"right"}}>{fmt(c.base)}</span>
+                        {c.bono>0 && <React.Fragment><span style={{color:C.purple}}>Bonificación</span><span style={{textAlign:"right",color:C.purple}}>{fmt(c.bono)}</span></React.Fragment>}
+                        {c.totalHoras>0 && <React.Fragment><span style={{color:C.accent}}>Horas extras — {c.totalHoras} hrs</span><span style={{textAlign:"right",color:C.accent}}>{fmt(c.montoHoras)}</span></React.Fragment>}
+                        {c.totalDias>0 && <React.Fragment><span style={{color:C.yellow}}>Días extras — {c.totalDias} días</span><span style={{textAlign:"right",color:C.yellow}}>{fmt(c.montoDias)}</span></React.Fragment>}
+                        {c.ant>0 && <React.Fragment><span style={{color:C.red}}>Anticipo</span><span style={{textAlign:"right",color:C.red}}>-{fmt(c.ant)}</span></React.Fragment>}
+                        <span style={{color:C.green,fontWeight:800,borderTop:"1px solid "+C.border,paddingTop:6}}>TOTAL</span>
+                        <span style={{textAlign:"right",color:C.green,fontWeight:900,borderTop:"1px solid "+C.border,paddingTop:6}}>{fmt(c.total)}</span>
+                      </div>
+                      {regsHoras.length>0 && (
+                        <div style={{background:"#0a1628",borderRadius:8,padding:"10px 12px",marginBottom:8}}>
+                          <div style={{fontWeight:700,fontSize:11,color:C.accent,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.06em"}}>Detalle horas extras</div>
+                          {regsHoras.map(r=>(
+                            <div key={r.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}>
+                              <span style={{color:C.muted}}>📅 {fmtFecha(r.fecha)}</span>
+                              <span style={{color:C.text}}>{hrLabel(r.horas)} hr <span style={{color:C.accent,marginLeft:8}}>{fmt(r.horas*(parseFloat(t.tarifaHora)||0))}</span></span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {regsDias.length>0 && (
+                        <div style={{background:"#0a1628",borderRadius:8,padding:"10px 12px"}}>
+                          <div style={{fontWeight:700,fontSize:11,color:C.yellow,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.06em"}}>Detalle días extras</div>
+                          {regsDias.map(r=>(
+                            <div key={r.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:4}}>
+                              <span style={{color:C.muted}}>📅 {fmtFecha(r.fecha)}</span>
+                              <span style={{color:C.yellow}}>{fmt(parseFloat(t.tarifaDia)||0)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {rs.length===0 && <div style={{fontSize:12,color:C.muted,fontStyle:"italic"}}>Sin extras en el periodo seleccionado.</div>}
+                    </div>
+                  );
+                })
+            }
+          </React.Fragment>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Planilla />);
+</script>
+</body>
+</html>
